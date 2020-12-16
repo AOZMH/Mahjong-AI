@@ -71,7 +71,10 @@ def parse_input(full_input):
                         avail_cards.remove(last_card)
                     elif myInput[2] == 'BUGANG':
                         #assert(False)
-                        pass
+                        avail_cards.remove(last_card)
+                        avail_cards.remove(last_card)
+                        avail_cards.remove(last_card)
+                        avail_cards.remove(last_card)
             last_card = myInput[-1]
     
     ret = {
@@ -120,14 +123,42 @@ def select_action(dat):
         'elapsed_time': time.time()-t0,
         'table_stats': list(map(len, tables)),
     }
+
     if state == 'self_play':
-        
         # 出牌算法
         policy = 'table'
-        play_card_selected = play_card(dat, tables, policy)
+        play_card_selected, max_score = play_card(dat, tables, policy)
         print(json.dumps({"response":"PLAY {}".format(play_card_selected), 'debug': debug}))
     else:
-        print(json.dumps({"response":"PASS", 'debug': debug}))
+        cur_card = dat['cur_request'][-1]   # 上一张别人打出的牌
+        policy, reward = 'table', 0
+        global_max_score, global_action = -1, "PASS"  # 最终的选择
+
+        # 尝试杠牌, 若可以则直接杠
+        gang_res = gang_card_from_other(dat, tables, policy)
+        if gang_res != False:
+            max_score, action = gang_res
+            if max_score > global_max_score:
+                global_max_score = max_score
+                global_action = action
+        
+        # 尝试碰牌
+        peng_res = peng_card(dat, tables, policy, reward)
+        if peng_res != False:
+            max_score, action = peng_res
+            if max_score > global_max_score:
+                global_max_score = max_score
+                global_action = action
+        
+        # 尝试吃牌
+        chi_res = chi_card(dat, tables, policy)
+        if chi_res != False:
+            max_score, action, _ = chi_res
+            if max_score > global_max_score:
+                global_max_score = max_score
+                global_action = action
+
+        print(json.dumps({"response": global_action, 'debug': debug}))
     exit(0)
 
 
@@ -154,9 +185,10 @@ def cal_score(cards, tables):
     # 方法为: 将筒条万风箭分别拆出来，查表/搜索得到每种花色含/不含将的胡牌得分
     # 之后枚举，找到恰有一个将的所有牌胡牌概率最大值，作为cards的打分，总的分值用各花色分值求和而得
     # tables为tuple，包含三种花色牌胡牌概率表
+    # NOTE:
+    #   1. 这个计算仅针对没有鸣的牌(avail_cards)，计算活牌的估值
     # TODO:
-    #   1. 这个计算比较粗略，cards为包括了鸣牌了的所有牌，将枚举了可能的所在花色，但实际上是不一定可能的（比如风牌全部鸣了，就不能有将了），所以这个score是一个乐观估计
-    #   2. 原始github实现计算了听牌，若cards已经听牌，则按照听牌数量计算打分，目前还没实现，之后实现
+    #   1. 原始github实现计算了听牌，若cards已经听牌，则按照听牌数量计算打分，目前还没实现，之后实现
 
     all_keys = get_keys(cards)
     table_normal, table_feng, table_jian = tables
@@ -182,23 +214,155 @@ def play_card(dat, tables, policy='table'):
     # search为搜索算法，待实现
 
     if policy == 'random':
-        return random.choice(dat['avail_cards'])
+        return random.choice(dat['avail_cards']), -1
     
     elif policy == 'table':
         max_score, play_card_selected = -1, None
         for card in set(dat['avail_cards']):
-            dat['cards'].remove(card)
-            cur_score, jiang_selected = cal_score(dat['cards'], tables)
-            dat['cards'].append(card)
-            print(card, cur_score)
+            dat['avail_cards'].remove(card)
+            cur_score, jiang_selected = cal_score(dat['avail_cards'], tables)
+            dat['avail_cards'].append(card)
+            #print(card, cur_score)
             if cur_score > max_score:
                 max_score = cur_score
                 play_card_selected = card
-        #print(play_card_selected)
-        return play_card_selected
+
+        return play_card_selected, max_score
 
     else:
         raise NotImplementedError
+
+
+def chi_card(dat, tables, policy='table'):
+    # 吃牌算法，策略可选为 'table', 'search'
+    # 若当前request不能吃，直接返回False，否则根据policy做决策
+    # table根据打表估值，分别计算吃前/所有可能的吃后/吃后再出一张牌后avail_cards的估值
+    
+    cur_card = dat['cur_request'][-1]
+    # 只有序数牌才能吃
+    if cur_card[0] not in ('B', 'T', 'W'):
+        return False
+    # 只能吃上家
+    if (int(dat['cur_request'][1])+1)%4 != dat['id']:
+        return False
+    
+    if policy == 'table':
+        avail_chi_actions = []  # 记录可行的吃法及相应估值结果
+        raw_score, _ = cal_score(dat['avail_cards'], tables)
+        max_score = raw_score
+        card_l2 = cur_card[0]+str(int(cur_card[1])-2)
+        card_l1 = cur_card[0]+str(int(cur_card[1])-1)
+        card_r1 = cur_card[0]+str(int(cur_card[1])+1)
+        card_r2 = cur_card[0]+str(int(cur_card[1])+2)
+        
+        # 枚举三种情况
+        if dat['avail_cards'].count(card_l2) > 0 and dat['avail_cards'].count(card_l1) > 0:
+            dat['avail_cards'].remove(card_l2)
+            dat['avail_cards'].remove(card_l1)
+            new_score, _ = cal_score(dat['avail_cards'], tables)
+            play_card_selected, new_max_score = play_card(dat, tables, policy='table')
+            dat['avail_cards'].append(card_l2)
+            dat['avail_cards'].append(card_l1)
+            if new_max_score >= max_score:
+                max_score = new_max_score
+                action = "CHI {} {}".format(card_l1, play_card_selected)
+                avail_chi_actions.append([0, card_l1, play_card_selected, new_score, new_max_score])
+        
+        if dat['avail_cards'].count(card_l1) > 0 and dat['avail_cards'].count(card_r1) > 0:
+            dat['avail_cards'].remove(card_l1)
+            dat['avail_cards'].remove(card_r1)
+            new_score, _ = cal_score(dat['avail_cards'], tables)
+            play_card_selected, new_max_score = play_card(dat, tables, policy='table')
+            dat['avail_cards'].append(card_l1)
+            dat['avail_cards'].append(card_r1)
+            if new_max_score >= max_score:
+                max_score = new_max_score
+                action = "CHI {} {}".format(cur_card, play_card_selected)
+                avail_chi_actions.append([1, cur_card, play_card_selected, new_score, new_max_score])
+        
+        if dat['avail_cards'].count(card_r1) > 0 and dat['avail_cards'].count(card_r2) > 0:
+            dat['avail_cards'].remove(card_r1)
+            dat['avail_cards'].remove(card_r2)
+            new_score, _ = cal_score(dat['avail_cards'], tables)
+            play_card_selected, new_max_score = play_card(dat, tables, policy='table')
+            dat['avail_cards'].append(card_r1)
+            dat['avail_cards'].append(card_r2)
+            if new_max_score >= max_score:
+                max_score = new_max_score
+                action = "CHI {} {}".format(card_r1, play_card_selected)
+                avail_chi_actions.append([2, card_r1, play_card_selected, new_score, new_max_score])
+        
+        if len(avail_chi_actions) == 0:
+            return False
+        else:
+            return max_score, action, avail_chi_actions
+    
+    else:
+        raise NotImplementedError
+
+
+def peng_card(dat, tables, policy='table', reward=0):
+    # 碰牌算法，策略可选为 'table', 'search'
+    # 若当前request不能碰，直接返回False，否则根据policy做决策
+    # table根据打表估值，分别计算碰前/碰后/碰后再出一张牌后avail_cards的估值
+    # 另外可以设置碰牌reward来鼓励碰牌带来的番
+
+    # 先判断碰牌是否合法
+    cur_card = dat['cur_request'][-1]
+    if dat['avail_cards'].count(cur_card) < 2:
+        return False
+
+    if policy == 'table':
+        # 原始得分
+        raw_score, _ = cal_score(dat['avail_cards'], tables)
+        # 碰后得分
+        dat['avail_cards'].remove(cur_card)
+        dat['avail_cards'].remove(cur_card)
+        new_score, _ = cal_score(dat['avail_cards'], tables)
+        # 碰+出牌后得分
+        play_card_selected, new_max_score = play_card(dat, tables, policy='table')
+
+        dat['avail_cards'].append(cur_card)
+        dat['avail_cards'].append(cur_card)
+
+        if new_max_score >= raw_score:
+            action = "PENG {}".format(play_card_selected)
+            return new_max_score, action
+        return False
+
+    else:
+        raise NotImplementedError
+
+
+def gang_card_from_other(dat, tables, policy='table'):
+    # 杠别人打出的牌
+
+    # 先判断碰牌是否合法
+    cur_card = dat['cur_request'][-1]
+    if dat['avail_cards'].count(cur_card) < 3:
+        return False
+    
+    if policy == 'table':
+        # 原始得分
+        raw_score, _ = cal_score(dat['avail_cards'], tables)
+        # 杠后得分
+        dat['avail_cards'].remove(cur_card)
+        dat['avail_cards'].remove(cur_card)
+        dat['avail_cards'].remove(cur_card)
+        new_score, _ = cal_score(dat['avail_cards'], tables)
+
+        dat['avail_cards'].append(cur_card)
+        dat['avail_cards'].append(cur_card)
+        dat['avail_cards'].append(cur_card)
+
+        if new_score >= raw_score:
+            action = "GANG"
+            return new_score, action
+        return False
+
+    else:
+        raise NotImplementedError
+
 
 def main():
     full_input = json.loads(input())
