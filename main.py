@@ -263,7 +263,7 @@ def chi_card(dat, tables, policy='table'):
             play_card_selected, new_max_score = play_card(dat, tables, policy='table')
             dat['avail_cards'].append(card_l2)
             dat['avail_cards'].append(card_l1)
-            if new_max_score >= max_score:
+            if new_max_score > max_score:
                 max_score = new_max_score
                 action = "CHI {} {}".format(card_l1, play_card_selected)
                 avail_chi_actions.append([0, card_l1, play_card_selected, new_score, new_max_score])
@@ -275,7 +275,7 @@ def chi_card(dat, tables, policy='table'):
             play_card_selected, new_max_score = play_card(dat, tables, policy='table')
             dat['avail_cards'].append(card_l1)
             dat['avail_cards'].append(card_r1)
-            if new_max_score >= max_score:
+            if new_max_score > max_score:
                 max_score = new_max_score
                 action = "CHI {} {}".format(cur_card, play_card_selected)
                 avail_chi_actions.append([1, cur_card, play_card_selected, new_score, new_max_score])
@@ -287,7 +287,7 @@ def chi_card(dat, tables, policy='table'):
             play_card_selected, new_max_score = play_card(dat, tables, policy='table')
             dat['avail_cards'].append(card_r1)
             dat['avail_cards'].append(card_r2)
-            if new_max_score >= max_score:
+            if new_max_score > max_score:
                 max_score = new_max_score
                 action = "CHI {} {}".format(card_r1, play_card_selected)
                 avail_chi_actions.append([2, card_r1, play_card_selected, new_score, new_max_score])
