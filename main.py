@@ -2,6 +2,8 @@ import json
 import random
 import time
 import pickle
+from MahjongGB import MahjongFanCalculator
+
 
 # 全局开始时间
 t0 = time.time()
@@ -18,6 +20,8 @@ def parse_input(full_input):
     # 分析自己收到的输入和自己过往的输出，并恢复状态
     my_cards = []   # card 列表
     avail_cards = []    # 当前可以打的牌列表, 排除吃碰杠之后的死牌
+    pack = []       # 自己的明牌列表
+    all_shown_cards = []    # 全局明牌列表，用于算番（和绝张）
     last_card = None    # 上回合打出的牌
     all_requests = full_input["requests"]
     all_responses = full_input["responses"]
@@ -52,6 +56,11 @@ def parse_input(full_input):
                         avail_cards.remove(last_card)
                         my_cards.remove(myInput[3])
                         avail_cards.remove(myInput[3])
+                        # 计算是谁给我的碰
+                        src_id = int(all_requests[ix-1].strip().split(' ')[1])
+                        src = (myID + 4 - src_id) % 4
+                        # 加入明牌中
+                        pack.append(['PENG', last_card, src])
                     elif myInput[2] == 'CHI':
                         #assert(False)
                         my_cards.append(last_card)
@@ -64,17 +73,37 @@ def parse_input(full_input):
                         avail_cards.remove(mid[0]+str(mid_num+1))
                         my_cards.remove(myInput[4])
                         avail_cards.remove(myInput[4])
+                        # 判断第几张是上家供牌（last_card）
+                        last_card_num = int(last_card[1])
+                        src = 2 + last_card_num - mid_num
+                        # 加入明牌中
+                        pack.append(['CHI', mid, src])
                     elif myInput[2] == 'GANG':
                         #assert(False)
+                        if int(all_requests[ix-1].strip().split(' ')[0]) == 2:     # 暗杠
+                            avail_cards.remove(last_card)       # 之前摸了一张新的牌，杠了，所以四张牌都应从avail_cards中去除
+                            my_cards.remove(last_card)          # 我们规定杠的牌不算手牌，所以手牌不包括这一张。不过其实my_cards没啥用，只是为了debug
+                            src = 0     # 算番器的规则是暗杠的source是0，上下对是123
+                        else:   # 明杠
+                            # 明杠是拿来别人打出来的last_card，所以avail_cards删除现有的三张，my_cards没区别
+                            src_id = int(all_requests[ix-1].strip().split(' ')[1])  # 计算是谁给我的杠
+                            src = (myID + 4 - src_id) % 4
                         avail_cards.remove(last_card)
                         avail_cards.remove(last_card)
                         avail_cards.remove(last_card)
-                    elif myInput[2] == 'BUGANG':
+                        # 加入明牌中
+                        pack.append(['GANG', last_card, src])
+                    elif myInput[2] == 'BUGANG':    # 补杠
                         #assert(False)
-                        avail_cards.remove(last_card)
-                        avail_cards.remove(last_card)
-                        avail_cards.remove(last_card)
-                        avail_cards.remove(last_card)
+                        avail_cards.remove(last_card)       # 摸了一张牌后补杠，这张牌无效了
+                        my_cards.remove(last_card)          # 且由于是杠，这张牌不算手牌
+                        check_peng_exist = False
+                        for ix, cur_pack in enumerate(pack):
+                            if cur_pack[0] == 'PENG' and cur_pack[1] == last_card:
+                                pack[ix][0] = 'GANG'
+                                check_peng_exist = True
+                                break
+                        assert(check_peng_exist)
             last_card = myInput[-1]
     
     ret = {
@@ -84,6 +113,7 @@ def parse_input(full_input):
         'cards': sorted(my_cards),
         'avail_cards': sorted(avail_cards),
         'cur_request': all_requests[-1].strip().split(' '),
+        'pack': pack,
     }
     return ret
 
@@ -122,20 +152,35 @@ def select_action(dat):
         'avail_cards': " ".join(dat['avail_cards']),
         'elapsed_time': time.time()-t0,
         'table_stats': list(map(len, tables)),
+        'pack': dat['pack'],
     }
 
     if state == 'self_play':
         # 出牌算法
         policy = 'table'
         play_card_selected, max_score = play_card(dat, tables, policy)
-        print(json.dumps({"response":"PLAY {}".format(play_card_selected), 'debug': debug}))
+        global_action = "PLAY {}".format(play_card_selected)
+        global_max_score = max_score
+        # 考虑暗杠或补杠
+        angang_reward, bugang_reward = 0., 0.
+        angang_res = gang_card_angang(dat, tables, max_score, reward=angang_reward)
+        bugang_res = gang_card_bugang(dat, tables, max_score, reward=bugang_reward)
+        if angang_res != False:
+            global_max_score, global_action = angang_res
+        if bugang_res != False:
+            cur_max_score, cur_action = bugang_res
+            if cur_max_score > global_max_score:
+                global_max_score = cur_max_score
+                global_action = cur_action
+        print(json.dumps({"response": global_action, 'debug': debug}))
+
     else:
         cur_card = dat['cur_request'][-1]   # 上一张别人打出的牌
         policy, reward = 'table', 0
         global_max_score, global_action = -1, "PASS"  # 最终的选择
 
         # 尝试杠牌, 若可以则直接杠
-        gang_res = gang_card_from_other(dat, tables, policy)
+        gang_res = gang_card_minggang(dat, tables, policy)
         if gang_res != False:
             max_score, action = gang_res
             if max_score > global_max_score:
@@ -334,10 +379,10 @@ def peng_card(dat, tables, policy='table', reward=0):
         raise NotImplementedError
 
 
-def gang_card_from_other(dat, tables, policy='table'):
-    # 杠别人打出的牌
+def gang_card_minggang(dat, tables, policy='table'):
+    # 杠别人打出的牌, 即明杠
 
-    # 先判断碰牌是否合法
+    # 先判断杠牌是否合法
     cur_card = dat['cur_request'][-1]
     if dat['avail_cards'].count(cur_card) < 3:
         return False
@@ -364,6 +409,77 @@ def gang_card_from_other(dat, tables, policy='table'):
         raise NotImplementedError
 
 
+def gang_card_angang(dat, tables, max_play_card_score, policy='table', reward=0.):
+    # 杠自己刚刚摸的牌, 即暗杠
+    # max_play_card_score: 如果不杠，打出去一张牌后活牌牌型的最高得分
+
+    # 先判断杠牌是否合法，由于当前request为摸牌，这张牌在parse_input中已经放入avail_cards中，故需要4张
+    cur_card = dat['cur_request'][-1]   # 这一把摸到的牌，已经放到avail_cards中
+    if dat['avail_cards'].count(cur_card) < 4:
+        return False
+    
+    if policy == 'table':
+        # 杠后得分
+        dat['avail_cards'].remove(cur_card)
+        dat['avail_cards'].remove(cur_card)
+        dat['avail_cards'].remove(cur_card)
+        dat['avail_cards'].remove(cur_card)
+        new_score, _ = cal_score(dat['avail_cards'], tables)
+
+        dat['avail_cards'].append(cur_card)
+        dat['avail_cards'].append(cur_card)
+        dat['avail_cards'].append(cur_card)
+        dat['avail_cards'].append(cur_card)
+
+        # 考虑是否暗杠，实际上是比较杠/不杠的估值
+        # 对于不杠，由于这一把摸了牌，必须要打一张，所以其估值为打了一张之后的最大估值
+        # 对于杠，这4张牌都是死牌了，故为余下牌的估值
+        # 然而，杠之后实际上还有一轮摸牌、打牌，实际上之后的估值还会提升（因为至少能把摸的牌打掉，估值不会下降），所以这个比较是不公平的
+        # 纯粹基于table的方法无法估计下一轮的后验分布，所以这里引入了reward，给杠本身加一点激励，有助于得到暗杠2番
+        # 但这个reward也不能太大，避免凑杠而拆牌的情况发生（e.g. W1, W2, W3*3 + W3, 不应杠）
+        if new_score + reward >= max_play_card_score:
+            action = "GANG {}".format(cur_card)
+            return new_score, action
+        return False
+
+    else:
+        raise NotImplementedError
+
+
+def gang_card_bugang(dat, tables, max_play_card_score, policy='table', reward=0.):
+    # 杠自己刚刚摸的牌并加到一个明刻上, 即补杠
+    # max_play_card_score: 如果不杠，打出去一张牌后活牌牌型的最高得分
+
+    # 先判断杠牌是否合法，要求之前碰过这张牌
+    cur_card = dat['cur_request'][-1]   # 这一把摸到的牌，已经放到avail_cards中
+    check_peng_exist = False
+    pack = dat['pack']
+    for ix, cur_pack in enumerate(pack):
+        if cur_pack[0] == 'PENG' and cur_pack[1] == cur_card:
+            check_peng_exist = True
+            break
+    if not check_peng_exist:
+        return False
+    
+    if policy == 'table':
+        # 杠后得分
+        dat['avail_cards'].remove(cur_card)
+        new_score, _ = cal_score(dat['avail_cards'], tables)
+
+        dat['avail_cards'].append(cur_card)
+
+        # 这里reward的意义和暗杠实际上一样，其实在补杠中这个问题更直接
+        # 因为对于打分，补杠就相当于打出摸得那张牌，这个得分肯定不会高于max_play_card_score
+        # 所以必须要有reward补杠才有效
+        if new_score + reward >= max_play_card_score:
+            action = "BUGANG {}".format(cur_card)
+            return new_score, action
+        return False
+
+    else:
+        raise NotImplementedError
+
+
 def main():
     full_input = json.loads(input())
     ret = parse_input(full_input)
@@ -373,5 +489,20 @@ def main():
     select_action(ret)
 
 
+def unit_test():
+    temp_dat = {
+        "turn_id": 71,
+        "data": None,
+        "id": 3,
+        "cards": ["B5", "B6", "F3", "F3", "F3", "J3", "J3", "J3", "T1", "T2", "T4", "W1", "W2"],
+        "avail_cards": ["T2", "T3", "T3", "T3", "W2", "W2"],
+        "cur_request": ["3","2","PLAY","T3"],
+        "state": "chi_peng_gang",
+        "pkl_route": "./data/Majiang/table_normal_feng_jian.pkl"
+    }
+    select_action(temp_dat)
+
+
 if __name__ == "__main__":
+    #unit_test()
     main()
