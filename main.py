@@ -22,6 +22,7 @@ def parse_input(full_input):
     avail_cards = []    # 当前可以打的牌列表, 排除吃碰杠之后的死牌
     pack = []       # 自己的明牌列表
     all_shown_cards = []    # 全局明牌列表，用于算番（和绝张）
+    card_wall_remain = [21, 21, 21, 21]     # 记录每个人牌墙还有几张，用来算isLast判断海底捞月/妙手回春
     last_card = None    # 上回合打出的牌
     all_requests = full_input["requests"]
     all_responses = full_input["responses"]
@@ -45,6 +46,8 @@ def parse_input(full_input):
             if cur_index == 2:  # 自己摸到了一张牌
                 my_cards.append(myInput[1])
                 avail_cards.append(myInput[1])
+                card_wall_remain[myID] -= 1     # 更新自己的牌墙
+            
             if cur_index == 3:  # draw/chi/peng/gang
                 cur_id = int(myInput[1])
                 if cur_id == myID:  # 自己做的动作，所以要更新牌型
@@ -107,6 +110,10 @@ def parse_input(full_input):
                                 check_peng_exist = True
                                 break
                         assert(check_peng_exist)
+                # 更新别人的牌墙
+                if myInput[2] == 'DRAW':
+                    card_wall_remain[cur_id] -= 1
+            # 更新上一张牌，用以帮助恢复吃、碰、杠相关局面
             last_card = myInput[-1]
     
     last_is_gang = False
@@ -125,6 +132,7 @@ def parse_input(full_input):
         'quan': curQuan,
         'all_shown_cards': all_shown_cards,
         'last_is_gang': last_is_gang,
+        'card_wall_remain': card_wall_remain,
     }
     return ret
 
@@ -209,7 +217,8 @@ def select_action(dat):
         'elapsed_time': time.time()-t0,
         'table_stats': list(map(len, tables)),
         'pack': dat['pack'],
-        'all_shown_cards': dat['all_shown_cards'],
+        #'all_shown_cards': dat['all_shown_cards'],
+        'card_wall_remain': dat['card_wall_remain'],
     }
 
     if state == 'self_play':
@@ -569,8 +578,15 @@ def judge_hu(dat, isZimo, isGang):
         dat['avail_cards'].remove(winTile)
     cur_hand = tuple(dat['avail_cards'])    # 当前手牌
     
-    # 判定海底捞月、妙手回春需要计算别人的牌墙，这个暂时都False
-    isLast = False
+    # 判定海底捞月、妙手回春需要计算别人的牌墙
+    if isZimo:
+        next_id = (dat['id'] + 1) % 4   # 判断我的下家牌墙里有没有牌
+    else:
+        next_id = (int(dat['cur_request'][1]) + 1) % 4  # 判断出牌者的下家牌墙里有没有牌
+    isLast = (dat['card_wall_remain'][next_id] == 0)    # 没牌了，则是妙手回春/海底捞月，即isLast
+    if isGang and not isZimo:   # 但是如果是抢杠胡，isLast一定是False，这块需要特判，因为那张胡牌实际上没打出来，没有所谓的下家
+        isLast = False
+
     # 判定和绝张需要判定明牌里面是否已经有三张winTile
     if dat['all_shown_cards'].count(winTile) + int(isZimo) >= 4:
         isJuezhang = True
@@ -581,7 +597,8 @@ def judge_hu(dat, isZimo, isGang):
         judge_res = MahjongFanCalculator(cur_pack, cur_hand, winTile, 0, isZimo, isJuezhang, isGang, isLast, dat['quan'], dat['id'])
     except Exception as err:
         judge_res = str(err)
-    print(judge_res)
+    # print(judge_res, '\n', isZimo, isGang, isLast, isJuezhang)
+    
     if isinstance(judge_res, str):
         cur_fan = 0
     else:
