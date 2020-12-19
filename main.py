@@ -31,6 +31,7 @@ def parse_input(full_input):
         
         if ix == 0:     # 第一轮只需要记录自己的ID
             myID = int(myInput.split(' ')[1])
+            curQuan = int(myInput.split(' ')[2])
         elif ix == 1:   # 第二轮记录初始牌
             myInput = myInput.split(' ')[5:]    # 忽略花牌
             for cur_card in myInput:
@@ -39,6 +40,8 @@ def parse_input(full_input):
         else:   # 开始对局, 恢复局面
             myInput = myInput.split(' ')
             cur_index = int(myInput[0])
+            all_shown_cards = add_all_shown_cards(all_shown_cards, myInput, last_card)
+
             if cur_index == 2:  # 自己摸到了一张牌
                 my_cards.append(myInput[1])
                 avail_cards.append(myInput[1])
@@ -106,6 +109,11 @@ def parse_input(full_input):
                         assert(check_peng_exist)
             last_card = myInput[-1]
     
+    last_is_gang = False
+    if len(all_requests) > 2:
+        request_before = all_requests[-2].strip().split(' ')
+        if len(request_before) == 3 and request_before[2] == 'GANG' and request_before[1] == myID:
+            last_is_gang = True
     ret = {
         'turn_id': len(all_requests),
         'data': my_data,
@@ -114,8 +122,53 @@ def parse_input(full_input):
         'avail_cards': sorted(avail_cards),
         'cur_request': all_requests[-1].strip().split(' '),
         'pack': pack,
+        'quan': curQuan,
+        'all_shown_cards': all_shown_cards,
+        'last_is_gang': last_is_gang,
     }
     return ret
+
+
+def add_all_shown_cards(all_shown_cards, cur_request, last_card):
+    # 更新全局明牌信息
+    cur_index = int(cur_request[0])
+    if cur_index != 3:  
+        return all_shown_cards
+
+    # 只需考虑 play/chi/peng/gang
+    if cur_request[2] == 'PLAY':
+        all_shown_cards.append(cur_request[3])
+    elif cur_request[2] == 'PENG':
+        # 碰的一张之前已经加入明牌中了（不论是 PLAY/PENG/CHI/BUGANG 打出的）
+        all_shown_cards.append(last_card)
+        all_shown_cards.append(last_card)
+        # 又打出一张，也要加入明牌中
+        all_shown_cards.append(cur_request[3])
+    elif cur_request[2] == 'CHI':
+        # 通过last_card和mid共同判断应该如何更新明牌
+        # 只需加入mid-1, mid, mid+1再去掉last_card即可
+        mid = cur_request[3]
+        all_shown_cards.remove(last_card)        
+        mid_num = int(mid[1])
+        all_shown_cards.append(mid[0]+str(mid_num-1))
+        all_shown_cards.append(mid)
+        all_shown_cards.append(mid[0]+str(mid_num+1))
+        # 打出的牌也要加入明牌，注意这里是第4项
+        all_shown_cards.append(cur_request[4])
+    elif cur_request[2] == 'GANG':
+        # 需要分情况，明杠和暗杠
+        if all_shown_cards.count(last_card) != 0:
+            # 若为明杠，杠的那张牌是别人打出的，已经加入明牌里了，只需要单独加三张即可
+            all_shown_cards.append(last_card)
+            all_shown_cards.append(last_card)
+            all_shown_cards.append(last_card)
+        else:
+            # 若为暗杠，不是明牌，啥都不干即可
+            pass
+    elif cur_request[2] == 'BUGANG':    # 补杠，之前的碰已经加入明牌了，只需要多加一张新摸的就行
+        all_shown_cards.append(cur_request[3])
+
+    return all_shown_cards
 
 
 def do_early_pass(dat):
@@ -132,6 +185,9 @@ def do_early_pass(dat):
         cur_action = myInput[2]
         if cur_id != dat['id'] and cur_action in ['PLAY', 'PENG', 'CHI']:
             return 'chi_peng_gang'
+        if cur_id != dat['id'] and cur_action == 'BUGANG':
+            return 'qiang_gang_hu'
+        
     
     # 否则都直接pass即可
     print(json.dumps({"response":"PASS", 'debug': [" ".join(dat['cards']), time.time()-t0]}))
@@ -153,9 +209,17 @@ def select_action(dat):
         'elapsed_time': time.time()-t0,
         'table_stats': list(map(len, tables)),
         'pack': dat['pack'],
+        'all_shown_cards': dat['all_shown_cards'],
     }
 
     if state == 'self_play':
+        # 先尝试胡牌
+        isGang = dat['last_is_gang']  # 判定是否杠上开花
+        is_hu, judge_re = judge_hu(dat, True, isGang)
+        if is_hu:   # 目前策略是能胡直接胡
+            print(json.dumps({'response': 'HU', 'debug': debug}))
+            exit(0)
+
         # 出牌算法
         policy = 'table'
         play_card_selected, max_score = play_card(dat, tables, policy)
@@ -174,7 +238,13 @@ def select_action(dat):
                 global_action = cur_action
         print(json.dumps({"response": global_action, 'debug': debug}))
 
-    else:
+    elif state == 'chi_peng_gang':
+        # 先尝试胡牌
+        is_hu, judge_re = judge_hu(dat, False, False)
+        if is_hu:   # 目前策略是能胡直接胡
+            print(json.dumps({'response': 'HU', 'debug': debug}))
+            exit(0)
+        
         cur_card = dat['cur_request'][-1]   # 上一张别人打出的牌
         policy, reward = 'table', 0
         global_max_score, global_action = -1, "PASS"  # 最终的选择
@@ -204,6 +274,14 @@ def select_action(dat):
                 global_action = action
 
         print(json.dumps({"response": global_action, 'debug': debug}))
+    
+    else:   # 尝试抢杠胡
+        is_hu, judge_re = judge_hu(dat, False, True)
+        if is_hu:   # 目前策略是能胡直接胡
+            print(json.dumps({'response': 'HU', 'debug': debug}))
+            exit(0)
+        action = "PASS"
+        print(json.dumps({"response": action, 'debug': debug}))
     exit(0)
 
 
@@ -478,6 +556,45 @@ def gang_card_bugang(dat, tables, max_play_card_score, policy='table', reward=0.
 
     else:
         raise NotImplementedError
+
+
+def judge_hu(dat, isZimo, isGang):
+    # 调用算番库判定有没有胡牌
+    # 当前明牌、和牌
+    cur_pack = tuple((tuple(pk) for pk in dat['pack']))
+    winTile = dat['cur_request'][-1]
+    
+    # 自摸一张牌(包括杠上开花)，此时新的那张牌已经加入avail_cards了，但判胡时不应在手牌里，所以去掉
+    if isZimo:
+        dat['avail_cards'].remove(winTile)
+    cur_hand = tuple(dat['avail_cards'])    # 当前手牌
+    
+    # 判定海底捞月、妙手回春需要计算别人的牌墙，这个暂时都False
+    isLast = False
+    # 判定和绝张需要判定明牌里面是否已经有三张winTile
+    if dat['all_shown_cards'].count(winTile) + int(isZimo) >= 4:
+        isJuezhang = True
+    else:
+        isJuezhang = False
+
+    try:
+        judge_res = MahjongFanCalculator(cur_pack, cur_hand, winTile, 0, isZimo, isJuezhang, isGang, isLast, dat['quan'], dat['id'])
+    except Exception as err:
+        judge_res = str(err)
+    print(judge_res)
+    if isinstance(judge_res, str):
+        cur_fan = 0
+    else:
+        cur_fan = sum([fan[0] for fan in judge_res])
+
+    # 之后还得恢复回来，因为还可能计算别的
+    if isZimo:
+        dat['avail_cards'].append(winTile)
+
+    if cur_fan >= 8:
+        return True, judge_res
+    else:
+        return False, judge_res
 
 
 def main():
