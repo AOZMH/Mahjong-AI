@@ -233,11 +233,12 @@ def select_action(dat):
         policy = 'table'
         play_card_selected, max_score = play_card(dat, tables, policy)
         global_action = "PLAY {}".format(play_card_selected)
-        global_max_score = max_score
+        global_max_score = -1
         # 考虑暗杠或补杠
-        angang_reward, bugang_reward = 0., 0.
+        angang_reward, bugang_reward = 0.02, 0.02
         angang_res = gang_card_angang(dat, tables, max_score, reward=angang_reward)
         bugang_res = gang_card_bugang(dat, tables, max_score, reward=bugang_reward)
+
         if angang_res != False:
             global_max_score, global_action = angang_res
         if bugang_res != False:
@@ -255,11 +256,11 @@ def select_action(dat):
             exit(0)
         
         cur_card = dat['cur_request'][-1]   # 上一张别人打出的牌
-        policy, reward = 'table', 0
+        policy, peng_reward, minggang_reward = 'table', 0, 0.01
         global_max_score, global_action = -1, "PASS"  # 最终的选择
 
         # 尝试杠牌, 若可以则直接杠
-        gang_res = gang_card_minggang(dat, tables, policy)
+        gang_res = gang_card_minggang(dat, tables, policy, minggang_reward)
         if gang_res != False:
             max_score, action = gang_res
             if max_score > global_max_score:
@@ -267,7 +268,7 @@ def select_action(dat):
                 global_action = action
         
         # 尝试碰牌
-        peng_res = peng_card(dat, tables, policy, reward)
+        peng_res = peng_card(dat, tables, policy, peng_reward)
         if peng_res != False:
             max_score, action = peng_res
             if max_score > global_max_score:
@@ -354,7 +355,6 @@ def play_card(dat, tables, policy='table'):
             dat['avail_cards'].remove(card)
             cur_score, jiang_selected = cal_score(dat['avail_cards'], tables)
             dat['avail_cards'].append(card)
-            #print(card, cur_score)
             if cur_score > max_score:
                 max_score = cur_score
                 play_card_selected = card
@@ -466,7 +466,7 @@ def peng_card(dat, tables, policy='table', reward=0):
         raise NotImplementedError
 
 
-def gang_card_minggang(dat, tables, policy='table'):
+def gang_card_minggang(dat, tables, policy='table', reward=0.):
     # 杠别人打出的牌, 即明杠
 
     # 先判断杠牌是否合法
@@ -487,9 +487,9 @@ def gang_card_minggang(dat, tables, policy='table'):
         dat['avail_cards'].append(cur_card)
         dat['avail_cards'].append(cur_card)
 
-        if new_score >= raw_score:
+        if new_score + reward >= raw_score:
             action = "GANG"
-            return new_score, action
+            return new_score + reward, action
         return False
 
     else:
@@ -526,7 +526,7 @@ def gang_card_angang(dat, tables, max_play_card_score, policy='table', reward=0.
         # 但这个reward也不能太大，避免凑杠而拆牌的情况发生（e.g. W1, W2, W3*3 + W3, 不应杠）
         if new_score + reward >= max_play_card_score:
             action = "GANG {}".format(cur_card)
-            return new_score, action
+            return new_score + reward, action
         return False
 
     else:
@@ -560,7 +560,7 @@ def gang_card_bugang(dat, tables, max_play_card_score, policy='table', reward=0.
         # 所以必须要有reward补杠才有效
         if new_score + reward >= max_play_card_score:
             action = "BUGANG {}".format(cur_card)
-            return new_score, action
+            return new_score + reward, action
         return False
 
     else:
@@ -624,14 +624,37 @@ def main():
 
 
 def unit_test():
+
     temp_dat = {
-        "turn_id": 71,
+        "turn_id": 168,
         "data": None,
         "id": 3,
-        "cards": ["B5", "B6", "F3", "F3", "F3", "J3", "J3", "J3", "T1", "T2", "T4", "W1", "W2"],
-        "avail_cards": ["T2", "T3", "T3", "T3", "W2", "W2"],
-        "cur_request": ["3","2","PLAY","T3"],
+        "cards": ['F1', 'F1', 'F1', 'F4', 'F4', 'F4', 'T1', 'T1', 'T1', 'T5', 'T6', 'T6', 'T6'],
+        "avail_cards": ['F1', 'F1', 'F1', 'T1', 'T1', 'T1', 'T5'],
+        "cur_request": ["3", "1", "PLAY", "F1"],
+        "pack": [['PENG', 'F4', 3], ['PENG', 'T6', 3]],
+        "quan": 3,
+        "all_shown_cards": ['F2', 'F3', 'J1', 'J3', 'J3', 'B1', 'T9', 'F2', 'J2', 'W5', 'W6', 'W7', 'B8', 'B2', 'T9', 'T3', 'T9', 'B9', 'F4', 'F4', 'F4', 'T2', 'T3', 'T4', 'W5', 'W8', 'B8', 'J2', 'W1', 'B3', 'B4', 'B5', 'W9', 'T5', 'T2', 'B2', 'T5', 'T1', 'W9', 'F2', 'B8', 'W7', 'B6', 'B9', 'J3', 'T9', 'B7', 'W1', 'J1', 'W2', 'W2', 'W3', 'W4', 'T4', 'F2', 'F3', 'F3', 'F3', 'T7', 'T7', 'T7', 'B9', 'T3', 'T7', 'B4', 'F4', 'B2', 'T5', 'W6', 'B8', 'J2', 'B2', 'W8', 'J2', 'B1', 'B6', 'B4', 'T6', 'T6', 'T6', 'W2', 'J3', 'J1', 'B7', 'B3', 'W6', 'T8', 'B5', 'B3', 'B4', 'T2', 'T2', 'W4', 'B5', 'T8', 'B1', 'W1', 'W2', 'B6', 'B9', 'W7', 'T6', 'F1'],
+        "last_is_gang": False,
+        "card_wall_remain": [0, 1, 3, 1],
         "state": "chi_peng_gang",
+        "pkl_route": "./data/Majiang/table_normal_feng_jian.pkl"
+    }
+
+    temp_dat = {
+        "turn_id": 168,
+        "data": None,
+        "id": 3,
+        "cards": ['F4', 'F4', 'F4', 'T6', 'T6', 'T6', 'W1', 'W2', 'W3', 'W3', 'W3', 'T1', 'T3', 'W3'],
+        "avail_cards": ['W1', 'W2', 'W3', 'W3', 'W3', 'T1', 'T3', 'W3'],
+        "cur_request": ["2", "W3"],
+        #"cur_request": ["3", "1", "PLAY", "W3"],
+        "pack": [['PENG', 'F4', 3], ['PENG', 'T6', 3]],
+        "quan": 3,
+        "all_shown_cards": ['F2', 'F3', 'J1', 'J3', 'J3', 'B1', 'T9', 'F2', 'J2', 'W5', 'W6', 'W7', 'B8', 'B2', 'T9', 'T3', 'T9', 'B9', 'F4', 'F4', 'F4', 'T2', 'T3', 'T4', 'W5', 'W8', 'B8', 'J2', 'W1', 'B3', 'B4', 'B5', 'W9', 'T5', 'T2', 'B2', 'T5', 'T1', 'W9', 'F2', 'B8', 'W7', 'B6', 'B9', 'J3', 'T9', 'B7', 'W1', 'J1', 'W2', 'W2', 'W3', 'W4', 'T4', 'F2', 'F3', 'F3', 'F3', 'T7', 'T7', 'T7', 'B9', 'T3', 'T7', 'B4', 'F4', 'B2', 'T5', 'W6', 'B8', 'J2', 'B2', 'W8', 'J2', 'B1', 'B6', 'B4', 'T6', 'T6', 'T6', 'W2', 'J3', 'J1', 'B7', 'B3', 'W6', 'T8', 'B5', 'B3', 'B4', 'T2', 'T2', 'W4', 'B5', 'T8', 'B1', 'W1', 'W2', 'B6', 'B9', 'W7', 'T6', 'F1'],
+        "last_is_gang": False,
+        "card_wall_remain": [0, 1, 3, 1],
+        "state": "self_play",
         "pkl_route": "./data/Majiang/table_normal_feng_jian.pkl"
     }
     select_action(temp_dat)
