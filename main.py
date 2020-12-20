@@ -119,7 +119,7 @@ def parse_input(full_input):
     last_is_gang = False
     if len(all_requests) > 2:
         request_before = all_requests[-2].strip().split(' ')
-        if len(request_before) == 3 and request_before[2] == 'GANG' and request_before[1] == myID:
+        if len(request_before) in (3, 4) and request_before[2] in ('GANG', 'BUGANG') and int(request_before[1]) == myID:
             last_is_gang = True
     ret = {
         'turn_id': len(all_requests),
